@@ -1,0 +1,14 @@
+---
+# .ansible-lint
+
+exclude_paths:
+  - src
+  - terrafrom
+  - .cache
+  - .github
+  - .pre-commit-config.yaml
+
+skip_list:
+  - name[template]
+  - yaml[line-length]
+  - var-naming[no-role-prefix]

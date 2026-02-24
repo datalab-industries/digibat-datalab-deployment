@@ -1,0 +1,56 @@
+---
+- name: Install fail2ban (Debian)
+  become: true
+  when: ansible_os_family == 'Debian'
+  ansible.builtin.apt:
+    pkg:
+      - fail2ban
+    state: present
+    update_cache: true
+
+- name: Install fail2ban (RedHat)
+  become: true
+  when: ansible_os_family == 'RedHat'
+  ansible.builtin.dnf:
+    name:
+      - epel-release
+      - fail2ban
+    state: present
+
+- name: Update config file
+  become: true
+  ansible.builtin.template:
+    src: etc/fail2ban/fail2ban.local.j2
+    dest: /etc/fail2ban/fail2ban.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart fail2ban
+
+- name: Update configuration file - /etc/fail2ban/jail.local
+  become: true
+  ansible.builtin.template:
+    src: etc/fail2ban/jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart fail2ban
+
+- name: Copy filters
+  become: true
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/fail2ban/filter.d/
+    owner: root
+    group: root
+    mode: "0644"
+  with_fileglob:
+    - filters/*.conf
+  notify: restart fail2ban
+
+- name: Start fail2ban (with systemd)
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: started
+  become: true

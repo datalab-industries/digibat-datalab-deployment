@@ -1,0 +1,150 @@
+---
+- name: Sync local datalab submodule with remote
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../src/datalab"
+    dest: "{{ ansible_user_home_dir }}"
+    recursive: true
+    delete: false
+
+- name: Check for plugin folder
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../src/plugins"
+  register: plugins_dir
+
+- name: Sync any plugins into datalab folder on remote
+  when: plugins_dir.stat.isdir is defined and plugins_dir.stat.isdir
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../src/plugins"
+    dest: "{{ ansible_user_home_dir }}/datalab/pydatalab"
+    recursive: true
+    delete: false
+  failed_when: false
+
+- name: Copy encrypted API env file from vault
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/vaults/datalab/.env_server"
+    dest: "{{ ansible_user_home_dir }}/datalab/pydatalab/.env"
+    mode: "0644"
+
+- name: Get git tag version locally to use as fact
+  delegate_to: localhost
+  ansible.builtin.shell:
+    cmd: set -o pipefail && git describe --tags --match 'v*' | sed 's/^v//' | sed 's/-rc/rc/' | sed 's/-/+/'
+    chdir: "{{ playbook_dir }}/../src/datalab"
+    executable: /bin/bash
+  register: git_tag
+  changed_when: false
+
+- name: Set fact for git tag version
+  ansible.builtin.set_fact:
+    git_tag: "{{ git_tag.stdout }}"
+
+- name: Write git version to a .env file to be loaded by build
+  ansible.builtin.copy:
+    content: "SETUPTOOLS_SCM_PRETEND_VERSION={{ git_tag }}\nVUE_APP_GIT_VERSION={{ git_tag }}"
+    dest: "{{ ansible_user_home_dir }}/datalab/.env_version"
+    mode: "0644"
+
+- name: Copy encrypted API config file from vault
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/vaults/datalab/prod_config.json"
+    dest: "{{ ansible_user_home_dir }}/datalab/pydatalab/config.json"
+    mode: "0644"
+
+- name: Copy encrypted app config file from vault
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/vaults/datalab/.env"
+    dest: "{{ ansible_user_home_dir }}/datalab/webapp/.env"
+    mode: "0644"
+
+- name: Build and launch database container
+  community.docker.docker_compose_v2:
+    project_src: "{{ ansible_user_home_dir }}/datalab"
+    profiles: prod
+    services: database
+    build: always
+
+- name: Build and launch API container
+  community.docker.docker_compose_v2:
+    project_src: "{{ ansible_user_home_dir }}/datalab"
+    profiles: prod
+    services: api
+    build: always
+    env_files:
+      - "{{ ansible_user_home_dir }}/datalab/pydatalab/.env"
+      - "{{ ansible_user_home_dir }}/datalab/.env_version"
+
+- name: Check whether ssh config exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/vaults/datalab/.ssh/config"
+  register: ssh_config
+  delegate_to: localhost
+
+- name: Set fact for whether ssh config exists
+  ansible.builtin.set_fact:
+    ssh_config_defined: "{{ ssh_config.stat.exists }}"
+
+- name: Sync local ssh config vault remote
+  when: ssh_config_defined
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/vaults/datalab/.ssh/"
+    dest: "{{ ansible_user_home_dir }}/.ssh"
+    mode: "0700"
+
+- name: List all SSH config files & keys
+  when: ssh_config_defined
+  ansible.builtin.find:
+    paths: "{{ ansible_user_home_dir }}/.ssh/"
+    patterns: "*"
+  register: ssh_files_glob
+
+- name: Create .ssh folder in container
+  when: ssh_config_defined
+  community.docker.docker_container_exec:
+    container: datalab-api-1
+    command: mkdir -p /root/.ssh
+
+- name: Copy SSH config and credentials into container
+  when: ssh_config_defined
+  community.docker.docker_container_copy_into:
+    container: datalab-api-1
+    path: "{{ item.path }}"
+    container_path: /root/.ssh/{{ item.path | basename }}
+  loop: "{{ ssh_files_glob.files }}"
+
+- name: Build and launch app container
+  community.docker.docker_compose_v2:
+    project_src: "{{ ansible_user_home_dir }}/datalab"
+    profiles: prod
+    services: app
+    build: always
+    env_files:
+      - "{{ ansible_user_home_dir }}/datalab/webapp/.env"
+      - "{{ ansible_user_home_dir }}/datalab/.env_version"
+
+- name: Add daily backup task to crontab
+  ansible.builtin.cron:
+    name: Daily snapshots
+    minute: "5"
+    hour: "4"
+    day: "*"
+    month: "*"
+    job: cd {{ ansible_user_home_dir }}/datalab; docker compose exec api /opt/.venv/bin/python -m invoke admin.create-backup --strategy-name daily-snapshots
+
+- name: Add weekly backup task to crontab
+  ansible.builtin.cron:
+    name: Weekly snapshots
+    minute: "5"
+    hour: "5"
+    weekday: "7"
+    month: "*"
+    job: cd {{ ansible_user_home_dir }}/datalab; docker compose exec api /opt/.venv/bin/python -m invoke admin.create-backup --strategy-name weekly-snapshots
+
+- name: Add quarterly backup task to crontab
+  ansible.builtin.cron:
+    name: Quarterly snapshots
+    minute: "5"
+    hour: "2"
+    day: "1"
+    month: 1,4,7,10
+    job: cd {{ ansible_user_home_dir }}/datalab; docker compose exec api /opt/.venv/bin/python -m invoke admin.create-backup --strategy-name quarterly-snapshots
