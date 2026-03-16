@@ -20,15 +20,12 @@
     <div class="custom-about-content">
       <h3>For AI Researchers: The Benchmark Dataset</h3>
       <p>Coming April 2026</p>
-      <p>We are releasing the <b>DIGIBAT Battery Discovery Benchmark</b>. This dataset contains over <b>250 fully characterized battery cells</b>, featuring:
-
+      <p>We are releasing the <b>DIGIBAT Battery Discovery Benchmark</b>. This dataset contains over <b>250 fully characterized battery cells</b>, featuring:</p>
       <ul>
         <li><b>Controlled Variables</b>: Varied spacer thicknesses, separator types, and electrolyte volumes.</li>
         <li><b>Multi-Modal Data</b>: Integrated EIS, CV, SEM, XRD, and cycle-life metrics.</li>
         <li><b>Programmatic Access</b>: All data is available via the <i>datalab</i> API for direct integration with Python-based AI agents and Large Language Models.</li>
       </ul>
-
-      </p>
     </div>
     
     <div class="custom-about-content">
@@ -40,7 +37,7 @@
       </ul>
 
       <div align="center">
-        <img src="/logos/epsrc.png" alt="EPSRC logo" width="150" class="custom-about-funding-logo" style="margin-top: 1rem;" />
+        <img src="/custom/logos/epsrc.png" alt="EPSRC logo" width="150" class="custom-about-funding-logo" style="margin-top: 1rem;" />
       </div>
 
     </div>
