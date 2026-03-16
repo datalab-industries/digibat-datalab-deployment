@@ -1,13 +1,50 @@
 @font-face {
   font-family: "Imperial Sans Display";
-  src: url("fonts/ImperialSansDisplay-Light.ttf") format("truetype");
+  src: url("fonts/ImperialSansDisplay-Extralight.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Extralight.ttf") format("truetype");
+  font-weight: 200;
+}
+
+@font-face {
+  font-family: "Imperial Sans Display";
+  src: url("fonts/ImperialSansDisplay-Light.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Light.ttf") format("truetype");
   font-weight: 300;
 }
 
 @font-face {
   font-family: "Imperial Sans Display";
-  src: url("fonts/ImperialSansDisplay-Bold.ttf") format("truetype");
+  src: url("fonts/ImperialSansDisplay-Regular.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "Imperial Sans Display";
+  src: url("fonts/ImperialSansDisplay-Medium.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "Imperial Sans Display";
+  src: url("fonts/ImperialSansDisplay-Semibold.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Semibold.ttf") format("truetype");
+  font-weight: 600;
+}
+
+@font-face {
+  font-family: "Imperial Sans Display";
+  src: url("fonts/ImperialSansDisplay-Bold.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Bold.ttf") format("truetype");
   font-weight: 700;
+}
+
+@font-face {
+  font-family: "Imperial Sans Display";
+  src: url("fonts/ImperialSansDisplay-Extrabold.woff2") format("woff2"),
+       url("fonts/ImperialSansDisplay-Extrabold.ttf") format("truetype");
+  font-weight: 800;
 }
 
 #app {
