@@ -10,11 +10,11 @@
     </div>
 
     <div class="custom-about-cards">
-      <a href="https://imperial.ac.uk/digibat" class="custom-about-card">Website</a>
-      <a href="https://www.imperial.ac.uk/digibat/about-us/meet-the-team" class="custom-about-card">Team</a>
-      <a href="https://www.imperial.ac.uk/digibat/capabilities" class="custom-about-card">Capabilities</a>
-      <a href="https://www.linkedin.com/company/digibatatimperial" class="custom-about-card">LinkedIn</a>
-      <a href="https://github.com/digibatatimperial/Digital-twin" class="custom-about-card">GitHub</a>
+      <a href="https://www.imperial.ac.uk/digibat" target="_blank" class="custom-about-card">Website</a>
+      <a href="https://www.imperial.ac.uk/digibat/about-us/meet-the-team" target="_blank" class="custom-about-card">Team</a>
+      <a href="https://www.imperial.ac.uk/digibat/capabilities" target="_blank" class="custom-about-card">Capabilities</a>
+      <a href="https://www.linkedin.com/company/digibatatimperial" target="_blank" class="custom-about-card">LinkedIn</a>
+      <a href="https://github.com/digibatatimperial/Digital-twin" target="_blank" class="custom-about-card">GitHub</a>
     </div>
     
     <div class="custom-about-content">

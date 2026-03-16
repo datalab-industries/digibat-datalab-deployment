@@ -51,6 +51,11 @@
     font-family: "Imperial Sans Display", sans-serif;
 }
 
+#nav a {
+    text-transform: uppercase;
+    color: #0000cd !important;
+}
+
 :root {
     --custom-font-family: "Imperial Sans Display";
 }
