@@ -1,11 +1,11 @@
 <template>
   <div class="custom-about">
     <div class="custom-about-header">
-      <h2 class="custom-about-title">DIGIBAT: Bridging the gap between atomic discovery and industrial R&D</h2>
+      <span class="h2 custom-about-title">DIGIBAT: Bridging the gap between atomic discovery and industrial R&D</span>
     </div>
 
     <div class="custom-about-content">
-      <h3>What is DIGIBAT?</h3>
+      <span class="h3">What is DIGIBAT?</span>
       <p>The automated High-throughput facility for advanced energy research (DIGIBAT) at Imperial College London is the UK's first fully automated laboratory dedicated to battery and electrocatalysis research. Our mission is to accelerate the discovery cycle for sustainable energy materials by replacing manual bottlenecks with a unified "Digital Twin Lab" infrastructure.</p>
     </div>
 
@@ -17,10 +17,9 @@
       <a href="https://github.com/digibatatimperial/Digital-twin" target="_blank" class="custom-about-card">GitHub</a>
     </div>
     
-    <div class="custom-about-content">
-      <h3>For AI Researchers: The Benchmark Dataset</h3>
-      <p>Coming April 2026</p>
-      <p>We are releasing the <b>DIGIBAT Battery Discovery Benchmark</b>. This dataset contains over <b>250 fully characterized battery cells</b>, featuring:</p>
+    <div class="custom-about-callout">
+      <span class="h3">For AI Researchers: The Benchmark Dataset</span>
+      <p><b>Coming April 2026</b> — we are releasing the <b>DIGIBAT Battery Discovery Benchmark</b>, containing over <b>250 fully characterized battery cells</b>, featuring:</p>
       <ul>
         <li><b>Controlled Variables</b>: Varied spacer thicknesses, separator types, and electrolyte volumes.</li>
         <li><b>Multi-Modal Data</b>: Integrated EIS, CV, SEM, XRD, and cycle-life metrics.</li>
@@ -29,7 +28,7 @@
     </div>
     
     <div class="custom-about-content">
-      <h3>Access & Collaboration</h3>
+      <span class="h3">Access & Collaboration</span>
       <p>DIGIBAT is funded by the EPSRC (<a href="https://gtr.ukri.org/projects?ref=EP%2FW036517%2F1">EP/W036517/1</a>) and is accessible to both academia and industry. We operate under strict data security protocols, ensuring that industrial IP is siloed and protected by robust confidentiality agreements.</p>
       <ul>
         <li><b>Contact us</b>: <a href="mailto:digibat@imperial.ac.uk">digibat@imperial.ac.uk</a></li>
@@ -61,8 +60,8 @@ export default {
   color: #0000cd;
 }
 
-.custom-about h3,
-.custom-about h5 {
+.custom-about .h3,
+.custom-about .h5 {
   font-family: "Imperial Sans Display", sans-serif;
   font-weight: 700;
   font-size: 1.2rem;
@@ -113,5 +112,32 @@ export default {
 .custom-about-card:hover {
   border-color: #0000cd;
   box-shadow: 0 2px 8px rgba(0, 0, 205, 0.15);
+}
+
+.custom-about-callout {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  margin: 2rem 0;
+  background: #faf8f5;
+  overflow: hidden;
+}
+
+.custom-about-callout .h3 {
+  display: block;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1.25rem;
+  background: #f0ece6;
+  border-bottom: 1px solid #ccc;
+}
+
+.custom-about-callout p,
+.custom-about-callout ul {
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+
+.custom-about-callout ul {
+  list-style-position: inside;
+  padding-left: 1.25rem;
 }
 </style>
