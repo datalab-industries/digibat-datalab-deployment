@@ -9,3 +9,11 @@
   src: url("fonts/ImperialSansDisplay-Bold.ttf") format("truetype");
   font-weight: 700;
 }
+
+#app {
+    font-family: "Imperial Sans Display", sans-serif;
+}
+
+:root {
+    --custom-font-family: "Imperial Sans Display";
+}
