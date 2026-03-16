@@ -9,6 +9,7 @@
 - name: Check for plugin folder
   ansible.builtin.stat:
     path: "{{ playbook_dir }}/../src/plugins"
+  delegate_to: localhost
   register: plugins_dir
 
 - name: Sync any plugins into datalab folder on remote
@@ -22,13 +23,14 @@
 
 - name: Check for custom public folder
   ansible.builtin.stat:
-    path: "{{ playbook_dir }}/../src/public"
+    path: "{{ playbook_dir }}/../src/public/custom"
+  delegate_to: localhost
   register: public_dir
 
 - name: Sync public folder into datalab folder on remote
   when: public_dir.stat.isdir is defined and public_dir.stat.isdir
   ansible.posix.synchronize:
-    src: "{{ playbook_dir }}/../src/public"
+    src: "{{ playbook_dir }}/../src/public/custom"
     dest: "{{ ansible_user_home_dir }}/datalab/webapp/public"
     recursive: true
     delete: true
