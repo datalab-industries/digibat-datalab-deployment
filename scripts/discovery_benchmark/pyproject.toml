@@ -1,7 +1,14 @@
 [project]
 name = "discovery-benchmark"
 version = "0.1.0"
-description = "Add your description here"
+description = "Tools for ingesting the DIGIBAT discovery benchmark into datalab"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["datalab-api >= 0.4.0", "pandas[excel] ~= 2.3"]
+
+[project.scripts]
+ingest-discovery-benchmark = "discovery_benchmark.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
