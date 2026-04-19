@@ -1,4 +1,4 @@
-"""Parse the CoinCellAssemble_250Plan.xlsx spreadsheet into structured DataFrames."""
+"""Parse the CoinCellAssemble_250Plan spreadsheet into structured DataFrames."""
 
 import re
 from dataclasses import dataclass, field
@@ -21,34 +21,24 @@ CELL_COLUMNS: dict[str, type] = {
     "Electrolyte_Volume_uL": float,
     "Spacer_mm": float,
     "Repeat": int,
-    "Do_Formation": str,
-    "Do_RateTest": str,
-    "Do_EIS": str,
     "Anode_Mass_mg": float,
     "Cathode_Mass_mg": float,
-    "ID_No": int,
+    "Cycler_Position": str,
     "Notes": str,
+    "Nominal_Capacity_mAh": float,
+    "ID_No": int,
 }
 
 COLUMN_ALIASES = {
-    "Cell_ID": "Cell_ID",
-    "Batch": "Batch",
-    "Category": "Category",
-    "Cathode": "Cathode",
     "Cathode diameter (mm)": "Cathode_Diameter_mm",
-    "Anode": "Anode",
     "Anode diameter (mm)": "Anode_Diameter_mm",
     "N/P ratio": "NP_Ratio",
-    "Separator_Type": "Separator_Type",
-    "Separator_Diameter_mm": "Separator_Diameter_mm",
-    "Electrolyte": "Electrolyte",
-    "Electrolyte_Volume_uL": "Electrolyte_Volume_uL",
-    "Anode mass": "Anode_Mass_mg",
-    "Cathode mass": "Cathode_Mass_mg",
+    "anode mass": "Anode_Mass_mg",
+    "cathode mass": "Cathode_Mass_mg",
+    "Cycler position": "Cycler_Position",
+    "capacity": "Nominal_Capacity_mAh",
     "ID no.": "ID_No",
 }
-
-BATCH2_EXTRA_COLUMNS = ["Channel", "Nominal_Capacity"]
 
 ELECTROLYTE_COLUMNS = ["Name", "Product_No", "Amount", "Description", "Supplier", "Link"]
 
@@ -80,20 +70,19 @@ class PlanData:
     """All parsed data from the coin cell assembly plan spreadsheet."""
 
     cells: pd.DataFrame
+    cells_raw: pd.DataFrame
     electrolytes: pd.DataFrame
     electrodes: pd.DataFrame
     echem_file_map: dict[int, list[Path]] = field(default_factory=dict)
 
 
-def _parse_batches(path: Path, sheet_name: str) -> pd.DataFrame:
-    df = pd.read_excel(
-        path,
-        sheet_name=sheet_name,
-        keep_default_na=False,
-        header=0,
-    )
-    df.rename(columns=COLUMN_ALIASES, inplace=True)
-    return df.dropna(subset=["ID_No"]).reset_index(drop=True)
+def _parse_cells(path: Path, sheet_name: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (aliased, raw) dataframes. Rows without an ID no. are dropped."""
+    raw = pd.read_excel(path, sheet_name=sheet_name, header=0, keep_default_na=True)
+    raw.columns = raw.columns.astype(str).str.strip()
+    raw = raw.dropna(subset=["ID no."]).reset_index(drop=True)
+    aliased = raw.rename(columns=COLUMN_ALIASES).copy()
+    return aliased, raw
 
 
 def _parse_chemicals(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -110,23 +99,29 @@ def _parse_chemicals(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return electrolytes, electrodes
 
 
-_ID_PREFIX_RE = re.compile(r"^(\d+)_")
+_ID_PREFIX_RE = re.compile(r"^(\d+)(?:[_.-]|$)")
+_ID_DIR_RE = re.compile(r"^(\d+)(?:_\d+)?$")
 
-NEWARE_EXTENSIONS = {".xlsx"}
 
-
-def map_echem_files(
-    neware_dir: Path,
+def map_files_by_id(
+    root: Path,
     known_ids: set[int],
+    extensions: set[str] | None = None,
 ) -> dict[int, list[Path]]:
-    """Map cell ID numbers to their Neware echem data files.
+    """Map numeric cell IDs to files whose basename starts with that ID.
 
-    Walks *neware_dir* recursively and matches files whose name starts with
-    a numeric ID present in *known_ids*.  Returns ``{id_no: [path, ...]}``.
+    Walks *root* recursively. If *extensions* is provided, files are filtered
+    by lowercase suffix (e.g. ``{".mpr", ".ndax"}``). A file matches an ID
+    when its basename starts with ``<digits>`` followed by ``_``, ``.``,
+    ``-`` or end-of-name, and those digits are in *known_ids*.
     """
     result: dict[int, list[Path]] = {}
-    for f in sorted(neware_dir.rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in NEWARE_EXTENSIONS:
+    if not root.exists():
+        return result
+    for f in sorted(root.rglob("*")):
+        if not f.is_file():
+            continue
+        if extensions is not None and f.suffix.lower() not in extensions:
             continue
         m = _ID_PREFIX_RE.match(f.name)
         if m is None:
@@ -137,28 +132,47 @@ def map_echem_files(
     return result
 
 
-def parse_plan(path: Path, sheet_names: list[str], neware_dir: Path | None = None) -> PlanData:
-    """Parse the full assembly plan spreadsheet.
+def map_dirs_by_id(root: Path, known_ids: set[int]) -> dict[int, list[Path]]:
+    """Map cell IDs to all files under ``root/<id>`` or ``root/<id>_<n>``."""
+    result: dict[int, list[Path]] = {}
+    if not root.exists():
+        return result
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        m = _ID_DIR_RE.match(d.name)
+        if m is None:
+            continue
+        cell_id = int(m.group(1))
+        if cell_id not in known_ids:
+            continue
+        for f in sorted(d.rglob("*")):
+            if f.is_file():
+                result.setdefault(cell_id, []).append(f)
+    return result
 
-    Returns a PlanData with:
-    - cells: both batches concatenated on the shared CELL_COLUMNS schema
-    - electrolytes: electrolyte product information
-    - electrodes: electrode specification and supplier data
-    - echem_file_map: {ID_No: [paths...]} mapping cells to Neware data files
-    """
-    batches = [_parse_batches(path, sheet_name) for sheet_name in sheet_names]
 
-    shared = list(CELL_COLUMNS.keys())
-    cells = pd.concat([b[shared] for b in batches], ignore_index=True)
-
+def parse_plan(
+    path: Path,
+    sheet_name: str = "Automated cells",
+    neware_dir: Path | None = None,
+) -> PlanData:
+    """Parse the full assembly plan spreadsheet."""
+    cells, cells_raw = _parse_cells(path, sheet_name)
     electrolytes, electrodes = _parse_chemicals(path)
 
-    known_ids = set(pd.to_numeric(cells["ID_No"], errors="coerce").dropna().astype(int))
+    known_ids = set(
+        pd.to_numeric(cells["ID_No"], errors="coerce").dropna().astype(int)
+    )
     echem_file_map: dict[int, list[Path]] = {}
-    echem_file_map = map_echem_files(Path("data/Neware"), known_ids)
+    if neware_dir is not None:
+        echem_file_map = map_files_by_id(
+            neware_dir, known_ids, extensions={".xlsx", ".nda", ".ndax"}
+        )
 
     return PlanData(
         cells=cells,
+        cells_raw=cells_raw,
         electrolytes=electrolytes,
         electrodes=electrodes,
         echem_file_map=echem_file_map,
