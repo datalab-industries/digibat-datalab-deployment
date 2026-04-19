@@ -3,83 +3,34 @@
 from __future__ import annotations
 
 import argparse
-import contextvars
 import logging
 import re
-import sys
-import time
 import unicodedata
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 from datalab_api import DatalabClient
 
-from parse_plan import (
+from .parse_plan import (
     PlanData,
     map_dirs_by_id,
     map_files_by_id,
     parse_plan,
 )
-
-logger = logging.getLogger("discovery_benchmark")
-
-_current_cell: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "current_cell", default=None
+from .utils import (
+    TimedOp,
+    configure_logging,
+    ensure_block,
+    existing_block_titles,
+    existing_file_names,
+    reset_current_cell,
+    set_current_cell,
+    try_rename_block,
+    upload_if_new,
+    upsert_item,
 )
 
-
-class _CellIdFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        cid = _current_cell.get()
-        record.cell_id = cid or "-"
-        return True
-
-
-class _ColorFormatter(logging.Formatter):
-    RESET = "\033[0m"
-    LEVEL_COLORS = {
-        logging.DEBUG: "\033[2;37m",
-        logging.INFO: "\033[36m",
-        logging.WARNING: "\033[33m",
-        logging.ERROR: "\033[31m",
-        logging.CRITICAL: "\033[1;31m",
-    }
-    NAME_COLOR = "\033[1;35m"
-    CELL_COLOR = "\033[1;32m"
-
-    def __init__(self, use_color: bool):
-        super().__init__()
-        self.use_color = use_color
-
-    def format(self, record: logging.LogRecord) -> str:
-        ts = self.formatTime(record, "%H:%M:%S")
-        level = record.levelname
-        name = record.name
-        cell = getattr(record, "cell_id", "-")
-        msg = record.getMessage()
-        if self.use_color:
-            level_c = self.LEVEL_COLORS.get(record.levelno, "")
-            r = self.RESET
-            head = f"{ts} {level_c}{level:<8}{r} {self.NAME_COLOR}{name}{r} [{self.CELL_COLOR}{cell}{r}]"
-        else:
-            head = f"{ts} {level:<8} {name} [{cell}]"
-        if record.exc_info:
-            msg = msg + "\n" + self.formatException(record.exc_info)
-        return f"{head} {msg}"
-
-
-def _configure_logging(verbose: bool) -> None:
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(_ColorFormatter(use_color=sys.stderr.isatty()))
-    handler.addFilter(_CellIdFilter())
-    root.addHandler(handler)
-    root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    for noisy in ("httpx", "httpcore", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+logger = logging.getLogger("discovery_benchmark")
 
 
 DATA_DIR = Path("data")
@@ -229,133 +180,6 @@ def _plan_metadata_html(raw_row: pd.Series) -> str:
             continue
         ordered.append((col, v))
     return "<h2>Plan metadata</h2>\n" + _html_table(ordered)
-
-
-@dataclass
-class TimedOp:
-    label: str
-    start_ns: int = 0
-
-    def __enter__(self):
-        self.start_ns = time.monotonic_ns()
-        return self
-
-    def __exit__(self, *exc):
-        elapsed = (time.monotonic_ns() - self.start_ns) / 1e9
-        logger.info("%s done", self.label, extra={"elapsed_s": round(elapsed, 3)})
-
-
-# ---------- idempotent primitives ----------
-
-def upsert_item(
-    client: DatalabClient,
-    item_id: str | int,
-    item_type: str,
-    item_data: dict,
-    collection_id: str | None = None,
-) -> dict:
-    try:
-        with TimedOp(f"create_item {item_id}"):
-            return client.create_item(
-                item_id=item_id,
-                item_type=item_type,
-                item_data=item_data,
-                collection_id=collection_id,
-            )
-    except Exception as e:
-        logger.info("create_item %s failed (%s); falling back to update", item_id, e)
-    try:
-        existing = client.get_item(item_id=item_id)
-    except Exception as e:
-        logger.error("get_item %s failed: %s", item_id, e)
-        raise
-    with TimedOp(f"update_item {item_id}"):
-        client.update_item(item_id=item_id, item_data=item_data)
-    return existing
-
-
-def _existing_file_names(item: dict) -> set[str]:
-    return {str(f["name"]) for f in (item.get("files") or [])}
-
-
-def _existing_block_titles(item: dict) -> set[str]:
-    """Return the set of titles already present on the item's blocks, for idempotency."""
-    titles: set[str] = set()
-    for block in (item.get("blocks_obj") or {}).values() if isinstance(item.get("blocks_obj"), dict) else []:
-        t = block.get("title")
-        if t:
-            titles.add(str(t))
-    # Some API variants return blocks as a list.
-    if isinstance(item.get("blocks"), list):
-        for b in item["blocks"]:
-            if isinstance(b, dict) and b.get("title"):
-                titles.add(str(b["title"]))
-    return titles
-
-
-def _try_rename_block(
-    client: DatalabClient,
-    item_id: str,
-    block_type: str,
-    block_id: str,
-    title: str,
-) -> None:
-    try:
-        client.update_data_block(
-            item_id=str(item_id),
-            block_id=block_id,
-            block_type=block_type,
-            block_data={"title": title},
-        )
-    except Exception as e:
-        logger.debug("rename block %s failed: %s", block_id, e)
-
-
-def upload_if_new(
-    client: DatalabClient,
-    item_id: str | int,
-    path: Path,
-    existing_names: set[str],
-    block_type: str | None,
-    block_title: str | None = None,
-) -> bool:
-    canonical = path.name.replace(" ", "_")
-    if canonical in existing_names or path.name in existing_names:
-        logger.debug("skip existing file %s on %s", path.name, item_id)
-        return False
-    with TimedOp(f"upload {path.name} -> {item_id}"):
-        uploaded = client.upload_file(item_id, str(path))
-    existing_names.add(canonical)
-    if block_type:
-        with TimedOp(f"create_data_block {block_type} on {item_id}"):
-            block = client.create_data_block(
-                str(item_id), block_type, file_ids=uploaded["file_id"]
-            )
-        if block_title:
-            _try_rename_block(
-                client, str(item_id), block_type, block.get("block_id", ""), block_title
-            )
-    return True
-
-
-def ensure_block(
-    client: DatalabClient,
-    item_id: str,
-    block_type: str,
-    title: str,
-    existing_titles: set[str],
-) -> None:
-    """Create a data block (no attached file) with a specific title if none exists."""
-    if title in existing_titles:
-        logger.debug("block %r already present on %s", title, item_id)
-        return
-    try:
-        with TimedOp(f"create_data_block {block_type} on {item_id}"):
-            block = client.create_data_block(str(item_id), block_type)
-        _try_rename_block(client, item_id, block_type, block.get("block_id", ""), title)
-        existing_titles.add(title)
-    except Exception as e:
-        logger.error("create %s block on %s failed: %s", block_type, item_id, e)
 
 
 # ---------- precursor matching ----------
@@ -548,9 +372,8 @@ def upsert_precursors(
     index: dict[tuple[str, str], str] = {}
     for key, payload in payloads.items():
         item_id = payload["item_id"]
-        token = _current_cell.set(item_id)
+        token = set_current_cell(item_id)
         try:
-            logger.info("upsert precursor (%s)", key[0])
             upsert_item(
                 client,
                 item_id=item_id,
@@ -560,7 +383,7 @@ def upsert_precursors(
             )
             index[key] = item_id
         finally:
-            _current_cell.reset(token)
+            reset_current_cell(token)
     return index
 
 
@@ -583,9 +406,8 @@ def upsert_cells(
             continue
 
         cell_id = cell["item_id"]
-        token = _current_cell.set(cell_id)
+        token = set_current_cell(cell_id)
         try:
-            logger.info("ingesting cell")
             try:
                 item = upsert_item(
                     client,
@@ -598,8 +420,8 @@ def upsert_cells(
                 logger.error("upsert cell failed: %s", e)
                 continue
 
-            existing_files = _existing_file_names(item)
-            existing_titles = _existing_block_titles(item)
+            existing_files = existing_file_names(item)
+            existing_titles = existing_block_titles(item)
 
             numeric_id = int(row["ID_No"])
 
@@ -630,7 +452,7 @@ def upsert_cells(
                     client, cell_id, MEDIA_BLOCK, "Cellerate images", existing_titles
                 )
         finally:
-            _current_cell.reset(token)
+            reset_current_cell(token)
 
 
 # ---------- precursor characterisation ----------
@@ -685,10 +507,10 @@ def attach_sem_tem(
                 logger.debug("no precursor match for %s", f)
                 continue
             name, item_id = matched
-            token = _current_cell.set(item_id)
+            token = set_current_cell(item_id)
             try:
                 item = client.get_item(item_id=item_id)
-                existing = _existing_file_names(item)
+                existing = existing_file_names(item)
                 # Only make a media block for TIFs — .dm4 doesn't render.
                 block = MEDIA_BLOCK if f.suffix.lower() == ".tif" else None
                 title = _media_title(technique, name, f) if block else None
@@ -696,7 +518,7 @@ def attach_sem_tem(
             except Exception as e:
                 logger.error("attach %s failed: %s", f.name, e)
             finally:
-                _current_cell.reset(token)
+                reset_current_cell(token)
 
 
 def attach_xrd(
@@ -716,25 +538,25 @@ def attach_xrd(
             logger.debug("no precursor match for %s", f)
             continue
         name, item_id = matched
-        token = _current_cell.set(item_id)
+        token = set_current_cell(item_id)
         try:
             item = client.get_item(item_id=item_id)
-            existing = _existing_file_names(item)
+            existing = existing_file_names(item)
             upload_if_new(client, item_id, f, existing, block_type=None)
             touched_precursors[item_id] = name
         except Exception as e:
             logger.error("attach %s failed: %s", f.name, e)
         finally:
-            _current_cell.reset(token)
+            reset_current_cell(token)
     # One XRD block per precursor with any XRD data — no file attached so it renders all.
     for item_id, name in touched_precursors.items():
-        token = _current_cell.set(item_id)
+        token = set_current_cell(item_id)
         try:
             item = client.get_item(item_id=item_id)
-            titles = _existing_block_titles(item)
+            titles = existing_block_titles(item)
             ensure_block(client, item_id, XRD_BLOCK, f"XRD {name}", titles)
         finally:
-            _current_cell.reset(token)
+            reset_current_cell(token)
 
 
 def attach_xps(
@@ -755,10 +577,10 @@ def attach_xps(
             logger.debug("no precursor match for %s", f)
             continue
         name, item_id = matched
-        token = _current_cell.set(item_id)
+        token = set_current_cell(item_id)
         try:
             item = client.get_item(item_id=item_id)
-            existing = _existing_file_names(item)
+            existing = existing_file_names(item)
             # Build a descriptive filename to avoid collisions across directories.
             scan = f.stem
             uniq_name = f"{name}_{f.parent.name}_{scan}{f.suffix}".replace(" ", "_")
@@ -773,7 +595,7 @@ def attach_xps(
                         block = client.create_data_block(
                             str(item_id), XPS_BLOCK, file_ids=uploaded["file_id"]
                         )
-                    _try_rename_block(
+                    try_rename_block(
                         client, item_id, XPS_BLOCK, block.get("block_id", ""),
                         f"XPS {name} {scan}",
                     )
@@ -783,7 +605,7 @@ def attach_xps(
         except Exception as e:
             logger.error("attach %s failed: %s", f.name, e)
         finally:
-            _current_cell.reset(token)
+            reset_current_cell(token)
 
 
 def attach_precursor_characterisation(
@@ -836,7 +658,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    _configure_logging(verbose=args.verbose)
+    configure_logging(verbose=args.verbose)
 
     logger.info("parsing plan %s", PLAN_PATH)
     plan = parse_plan(PLAN_PATH, neware_dir=NEWARE_DIR)
