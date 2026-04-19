@@ -21,6 +21,7 @@ from .utils import (
     TimedOp,
     configure_logging,
     ensure_block,
+    ensure_collection,
     existing_block_titles,
     existing_file_names,
     reset_current_cell,
@@ -38,6 +39,53 @@ PLAN_PATH = DATA_DIR / "CoinCellAssemble_250Plan_20260410.xlsx"
 NEWARE_DIR = DATA_DIR / "Neware"
 CELLERATE_DIR = DATA_DIR / "Cellerate" / "Labelled"
 COLLECTION_ID = "Discovery-Benchmark"
+COLLECTION_TITLE = "DIGIBAT Discovery Benchmark"
+REPO_URL = "https://github.com/datalab-industries/digibat-datalab-deployment"
+INGESTION_SUBPATH = "tree/main/scripts/discovery_benchmark"
+
+# Funding acknowledgement appended to the collection description and every cell.
+# Update with a funding/grant code when available.
+FUNDING_NOTE = (
+    "<p><i>This work was supported by the "
+    '<a href="https://www.royce.ac.uk/">Henry Royce Institute</a>.</i></p>'
+)
+
+COLLECTION_DESCRIPTION = f"""\
+<h2>DIGIBAT Discovery Benchmark</h2>
+<p>
+  A reference collection of ~250 lithium-ion coin cells assembled to
+  systematically span common cathode/anode/electrolyte chemistries,
+  produced by the DIGIBAT project as a shared benchmark for
+  battery-informatics tooling. Each cell is characterised both at the
+  component (precursor) level and at the cell level.
+</p>
+
+<h3>Cell chemistries covered</h3>
+<ul>
+  <li><b>Cathodes:</b> NMC811, NMC622, LFP, LCO, LMFP</li>
+  <li><b>Anodes:</b> Graphite, Li (counter electrode)</li>
+  <li><b>Electrolytes:</b> several LiPF<sub>6</sub> formulations
+      (EC/DEC, EC/DMC, EC/DMC/DEC, EC/EMC)</li>
+  <li><b>Separators:</b> Celgard, glass fibre</li>
+</ul>
+
+<h3>Characterisation</h3>
+<ul>
+  <li>Cycling — Neware (<code>.ndax</code>/<code>.nda</code>/<code>.xlsx</code>)
+      and BioLogic CV/EIS (<code>.mpr</code>)</li>
+  <li>SWingXL cycler reports (<code>.xlsx</code>)</li>
+  <li>Cellerate assembly photos per cell</li>
+  <li>SEM/TEM micrographs, XRD patterns, XPS scans, BET surface area —
+      per precursor material</li>
+</ul>
+
+<p>
+  The ingestion code that produced this collection lives at
+  <a href="{REPO_URL}/{INGESTION_SUBPATH}">{REPO_URL}/{INGESTION_SUBPATH}</a>.
+</p>
+
+{FUNDING_NOTE}
+"""
 
 ECHEM_BLOCK = "cycle"
 MEDIA_BLOCK = "media"
@@ -321,7 +369,7 @@ def row_to_cell(
     cell: dict = {
         "item_id": str(cell_id),
         "name": name if isinstance(name, str) else str(cell_id),
-        "description": _plan_metadata_html(raw_row),
+        "description": _plan_metadata_html(raw_row) + "\n\n" + FUNDING_NOTE,
         "cell_format": "coin",
     }
     if cell_id in cellerate_cells:
@@ -700,6 +748,7 @@ def main() -> None:
     client = DatalabClient(args.url)
     client.authenticate()
 
+    ensure_collection(client, COLLECTION_ID, COLLECTION_TITLE, COLLECTION_DESCRIPTION)
     precursor_index = upsert_precursors(client, plan)
     upsert_cells(
         client,

@@ -123,6 +123,31 @@ def upsert_item(
     return existing
 
 
+def ensure_collection(
+    client: DatalabClient,
+    collection_id: str,
+    title: str,
+    description: str,
+) -> None:
+    """Create the collection if missing. No-op if it already exists.
+
+    The datalab API has no ``update_collection``, so the description of an
+    existing collection is left alone to avoid clobbering edits made via
+    the web UI.
+    """
+    try:
+        client.get_collection(collection_id)
+        logger.info("collection %s already exists", collection_id)
+        return
+    except Exception:
+        pass
+    client.create_collection(
+        collection_id,
+        collection_data={"title": title, "description": description},
+    )
+    logger.info("created collection %s", collection_id)
+
+
 def existing_file_names(item: dict) -> set[str]:
     return {str(f["name"]) for f in (item.get("files") or [])}
 
