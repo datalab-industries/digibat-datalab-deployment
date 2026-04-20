@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import shutil
+import tempfile
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -362,6 +365,7 @@ def row_to_cell(
     precursor_index: dict[tuple[str, str], str],
     active_proportions: dict[str, float],
     cellerate_cells: set[int],
+    cell_dates: dict[int, datetime],
 ) -> dict:
     cell_id = int(row["ID_No"])
     name = _nan_to_none(row["Cell_ID"])
@@ -374,6 +378,8 @@ def row_to_cell(
     }
     if cell_id in cellerate_cells:
         cell["cell_format_description"] = "cellerate"
+    if cell_id in cell_dates:
+        cell["date"] = cell_dates[cell_id].isoformat()
 
     cathode_active_mg = None
     cathode = _nan_to_none(row["Cathode"])
@@ -443,12 +449,15 @@ def upsert_cells(
     cell_characterisation: dict[int, list[tuple[Path, str | None]]],
     cellerate_files: dict[int, list[Path]],
     active_proportions: dict[str, float],
+    cell_dates: dict[int, datetime],
 ) -> None:
     cellerate_cells = set(cellerate_files.keys())
     for i, (_, row) in enumerate(plan.cells.iterrows()):
         raw_row = plan.cells_raw.iloc[i]
         try:
-            cell = row_to_cell(row, raw_row, precursor_index, active_proportions, cellerate_cells)
+            cell = row_to_cell(
+                row, raw_row, precursor_index, active_proportions, cellerate_cells, cell_dates
+            )
         except Exception as e:
             logger.exception("skipping bad row %s: %s", row.get("ID_No"), e)
             continue
@@ -629,27 +638,35 @@ def attach_xps(
         try:
             item = client.get_item(item_id=item_id)
             existing = existing_file_names(item)
-            # Build a descriptive filename to avoid collisions across directories.
+            # Build a descriptive filename. datalab stores files under
+            # ``file_path.name``, so to actually persist this name (and dedupe
+            # on rerun) we copy the file to a tempdir with the unique name
+            # and upload from there.
             scan = f.stem
             uniq_name = f"{name}_{f.parent.name}_{scan}{f.suffix}".replace(" ", "_")
-            target = f
-            if uniq_name not in existing and f.name not in existing:
+            canonical = uniq_name  # datalab replaces spaces, but we already have none.
+            if canonical in existing:
+                logger.debug("skip existing XPS file %s on %s", canonical, item_id)
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                staged = Path(tmp) / uniq_name
+                shutil.copy2(f, staged)
                 with TimedOp(f"upload {uniq_name} -> {item_id}"):
-                    uploaded = client.upload_file(item_id, str(target))
-                existing.add(uniq_name)
-                existing.add(f.name)
-                try:
-                    with TimedOp(f"create_data_block xps on {item_id}"):
-                        block = client.create_data_block(
-                            str(item_id), XPS_BLOCK, file_ids=uploaded["file_id"]
-                        )
-                    try_rename_block(
-                        client, item_id, XPS_BLOCK, block.get("block_id", ""),
-                        f"XPS {name} {scan}",
+                    uploaded = client.upload_file(item_id, str(staged))
+            existing.add(canonical)
+            try:
+                with TimedOp(f"create_data_block xps on {item_id}"):
+                    block = client.create_data_block(
+                        str(item_id), XPS_BLOCK, file_ids=uploaded["file_id"]
                     )
-                except Exception as e:
-                    # xps block may not exist on this server — uploading is still useful.
-                    logger.warning("xps block for %s failed: %s", f.name, e)
+                try_rename_block(
+                    client, item_id, XPS_BLOCK, block.get("block_id", ""),
+                    f"XPS {name} {scan}",
+                    file_id=uploaded["file_id"],
+                )
+            except Exception as e:
+                # xps block may not exist on this server — the file upload is still useful.
+                logger.warning("xps block for %s failed: %s", f.name, e)
         except Exception as e:
             logger.error("attach %s failed: %s", f.name, e)
         finally:
@@ -691,6 +708,58 @@ def collect_cellerate(known_ids: set[int]) -> dict[int, list[Path]]:
     return map_dirs_by_id(CELLERATE_DIR, known_ids)
 
 
+# ---------- assembly dates ----------
+
+# Cellerate saves each cell into a subdir named cell_x-YYYYMMDD-HHMM — that
+# timestamp is the assembly run.
+_CELLERATE_TS_RE = re.compile(r"cell_x-(\d{8})-(\d{4})")
+
+
+def _cellerate_date(paths: list[Path]) -> datetime | None:
+    for p in paths:
+        for part in p.parts:
+            m = _CELLERATE_TS_RE.match(part)
+            if m:
+                try:
+                    return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M")
+                except ValueError:
+                    continue
+    return None
+
+
+def _earliest_mtime(paths: list[Path]) -> datetime | None:
+    """Upper bound on assembly: the earliest file mtime associated with the cell.
+
+    SharePoint often flattens mtimes on sync, but Neware cycling exports tend to
+    retain their original mtime. Cycling postdates assembly, so this is a
+    conservative upper bound rather than the true assembly date.
+    """
+    mtimes: list[float] = []
+    for p in paths:
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    if not mtimes:
+        return None
+    return datetime.fromtimestamp(min(mtimes))
+
+
+def collect_cell_dates(
+    cellerate_files: dict[int, list[Path]],
+    neware_files: dict[int, list[Path]],
+    known_ids: set[int],
+) -> dict[int, datetime]:
+    dates: dict[int, datetime] = {}
+    for cid in known_ids:
+        d = _cellerate_date(cellerate_files.get(cid, []))
+        if d is None:
+            d = _earliest_mtime(neware_files.get(cid, []))
+        if d is not None:
+            dates[cid] = d
+    return dates
+
+
 # ---------- entry ----------
 
 def _parse_args() -> argparse.Namespace:
@@ -723,6 +792,13 @@ def main() -> None:
     )
     cell_char = collect_cell_characterisation(known_ids)
     cellerate_files = collect_cellerate(known_ids)
+    cell_dates = collect_cell_dates(cellerate_files, plan.echem_file_map, known_ids)
+    logger.info(
+        "assembly dates resolved for %d/%d cells (%d from Cellerate, rest from echem mtime)",
+        len(cell_dates),
+        len(known_ids),
+        sum(1 for cid in cell_dates if _cellerate_date(cellerate_files.get(cid, []))),
+    )
     active_props = _active_proportions(plan)
     logger.info(
         "active proportions: %s",
@@ -758,6 +834,7 @@ def main() -> None:
         cell_char,
         cellerate_files,
         active_props,
+        cell_dates,
     )
     attach_precursor_characterisation(client, precursor_index)
 
