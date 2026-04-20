@@ -129,23 +129,33 @@ def ensure_collection(
     title: str,
     description: str,
 ) -> None:
-    """Create the collection if missing. No-op if it already exists.
+    """Create the collection if missing, else PATCH its title/description in place.
 
-    The datalab API has no ``update_collection``, so the description of an
-    existing collection is left alone to avoid clobbering edits made via
-    the web UI.
+    ``create_item(collection_id=...)`` auto-creates empty collections, so by the
+    time an ingestion script calls this, the collection often already exists
+    with no description. There's no public ``update_collection`` on the client,
+    so we PATCH the REST resource directly.
     """
     try:
-        client.get_collection(collection_id)
-        logger.info("collection %s already exists", collection_id)
-        return
+        data, _ = client.get_collection(collection_id)
+        immutable_id = data["immutable_id"]
     except Exception:
-        pass
-    client.create_collection(
-        collection_id,
-        collection_data={"title": title, "description": description},
-    )
-    logger.info("created collection %s", collection_id)
+        client.create_collection(
+            collection_id,
+            collection_data={"title": title, "description": description},
+        )
+        logger.info("created collection %s", collection_id)
+        return
+
+    url = f"{client.datalab_api_url}/collections/{immutable_id}"
+    try:
+        client._patch(
+            url,
+            json={"data": {"title": title, "description": description}},
+        )
+        logger.info("updated collection %s (title + description)", collection_id)
+    except Exception as e:
+        logger.warning("could not PATCH collection %s: %s", collection_id, e)
 
 
 def existing_file_names(item: dict) -> set[str]:
@@ -174,13 +184,21 @@ def try_rename_block(
     block_type: str,
     block_id: str,
     title: str,
+    file_id: str | None = None,
 ) -> None:
+    """Rename a block. Pass *file_id* if the block has one attached — the
+    update-block endpoint replaces ``block_data`` fields, so omitting
+    ``file_id`` here would detach the file.
+    """
+    block_data: dict = {"title": title}
+    if file_id:
+        block_data["file_id"] = file_id
     try:
         client.update_data_block(
             item_id=str(item_id),
             block_id=block_id,
             block_type=block_type,
-            block_data={"title": title},
+            block_data=block_data,
         )
     except Exception as e:
         logger.debug("rename block %s failed: %s", block_id, e)
@@ -208,7 +226,8 @@ def upload_if_new(
             )
         if block_title:
             try_rename_block(
-                client, str(item_id), block_type, block.get("block_id", ""), block_title
+                client, str(item_id), block_type, block.get("block_id", ""), block_title,
+                file_id=uploaded["file_id"],
             )
     return True
 
