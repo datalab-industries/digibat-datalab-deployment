@@ -27,6 +27,7 @@ from .utils import (
     ensure_collection,
     existing_block_titles,
     existing_file_names,
+    reconcile_block_type,
     reset_current_cell,
     set_current_cell,
     try_rename_block,
@@ -91,6 +92,7 @@ COLLECTION_DESCRIPTION = f"""\
 """
 
 ECHEM_BLOCK = "cycle"
+EIS_BLOCK = "eis"
 MEDIA_BLOCK = "media"
 XRD_BLOCK = "xrd"
 XPS_BLOCK = "xps"
@@ -98,7 +100,7 @@ XPS_BLOCK = "xps"
 # Per-cell data: filename prefix matches cell ID.
 CELL_FILE_SOURCES: list[tuple[Path, set[str] | None, str | None]] = [
     (DATA_DIR / "CV", {".mpr"}, ECHEM_BLOCK),
-    (DATA_DIR / "EIS", {".mpr"}, ECHEM_BLOCK),
+    (DATA_DIR / "EIS", {".mpr"}, EIS_BLOCK),
 ]
 
 
@@ -485,13 +487,18 @@ def upsert_cells(
             # Cycling — each file gets its own cycle block (historic behaviour).
             for f in echem_files.get(numeric_id, []):
                 try:
+                    reconcile_block_type(client, cell_id, item, f.name, ECHEM_BLOCK)
                     upload_if_new(client, cell_id, f, existing_files, ECHEM_BLOCK)
                 except Exception as e:
                     logger.error("upload %s failed: %s", f.name, e)
 
-            # CV/EIS/SWingXL etc.
+            # CV/EIS/SWingXL etc. Block-type conventions have changed between
+            # runs (EIS used to go into cycle blocks) — reconcile first so stale
+            # cycle blocks get rebuilt as eis/cv blocks.
             for f, block in cell_characterisation.get(numeric_id, []):
                 try:
+                    if block:
+                        reconcile_block_type(client, cell_id, item, f.name, block)
                     upload_if_new(client, cell_id, f, existing_files, block)
                 except Exception as e:
                     logger.error("upload %s failed: %s", f.name, e)
@@ -571,6 +578,10 @@ def attach_sem_tem(
                 # Only make a media block for TIFs — .dm4 doesn't render.
                 block = MEDIA_BLOCK if f.suffix.lower() == ".tif" else None
                 title = _media_title(technique, name, f) if block else None
+                if block:
+                    reconcile_block_type(
+                        client, item_id, item, f.name, block, desired_title=title
+                    )
                 upload_if_new(client, item_id, f, existing, block, block_title=title)
             except Exception as e:
                 logger.error("attach %s failed: %s", f.name, e)
@@ -623,6 +634,10 @@ def attach_xps(
     root = DATA_DIR / "XPS"
     if not root.exists():
         return
+    # Some precursors have multiple copies of the same scan (e.g. LCO appears
+    # under LCO/Group and LCO_repeat/LCO/Group with identical C1s/Co2p/... files).
+    # Only upload the first occurrence of each (precursor, scan_stem) pair.
+    seen_scans: set[tuple[str, str]] = set()
     for f in sorted(root.rglob("*")):
         if not f.is_file() or f.suffix.lower() != ".vgd":
             continue
@@ -634,6 +649,12 @@ def attach_xps(
             logger.debug("no precursor match for %s", f)
             continue
         name, item_id = matched
+        scan = f.stem
+        scan_key = (item_id, scan.lower().replace(" ", ""))
+        if scan_key in seen_scans:
+            logger.debug("skip duplicate %s scan for %s (%s)", scan, name, f)
+            continue
+        seen_scans.add(scan_key)
         token = set_current_cell(item_id)
         try:
             item = client.get_item(item_id=item_id)
@@ -642,18 +663,22 @@ def attach_xps(
             # ``file_path.name``, so to actually persist this name (and dedupe
             # on rerun) we copy the file to a tempdir with the unique name
             # and upload from there.
-            scan = f.stem
-            uniq_name = f"{name}_{f.parent.name}_{scan}{f.suffix}".replace(" ", "_")
-            canonical = uniq_name  # datalab replaces spaces, but we already have none.
-            if canonical in existing:
-                logger.debug("skip existing XPS file %s on %s", canonical, item_id)
+            uniq_name = f"{name}_{scan}{f.suffix}".replace(" ", "_")
+            if uniq_name in existing:
+                # File already uploaded on a prior run — heal any damaged XPS
+                # block (wrong type or missing file_id) before skipping.
+                reconcile_block_type(
+                    client, item_id, item, uniq_name, XPS_BLOCK,
+                    desired_title=f"XPS {name} {scan}",
+                )
+                logger.debug("skip existing XPS file %s on %s", uniq_name, item_id)
                 continue
             with tempfile.TemporaryDirectory() as tmp:
                 staged = Path(tmp) / uniq_name
                 shutil.copy2(f, staged)
                 with TimedOp(f"upload {uniq_name} -> {item_id}"):
                     uploaded = client.upload_file(item_id, str(staged))
-            existing.add(canonical)
+            existing.add(uniq_name)
             try:
                 with TimedOp(f"create_data_block xps on {item_id}"):
                     block = client.create_data_block(
@@ -662,6 +687,7 @@ def attach_xps(
                 try_rename_block(
                     client, item_id, XPS_BLOCK, block.get("block_id", ""),
                     f"XPS {name} {scan}",
+                    existing_block_data=block,
                     file_id=uploaded["file_id"],
                 )
             except Exception as e:

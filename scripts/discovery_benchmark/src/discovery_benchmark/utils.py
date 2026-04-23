@@ -147,7 +147,7 @@ def ensure_collection(
         logger.info("created collection %s", collection_id)
         return
 
-    url = f"{client.datalab_api_url}/collections/{immutable_id}"
+    url = f"{client.datalab_api_url}/collections/{collection_id}"
     try:
         client._patch(
             url,
@@ -184,24 +184,180 @@ def try_rename_block(
     block_type: str,
     block_id: str,
     title: str,
+    existing_block_data: dict | None = None,
     file_id: str | None = None,
 ) -> None:
-    """Rename a block. Pass *file_id* if the block has one attached — the
-    update-block endpoint replaces ``block_data`` fields, so omitting
-    ``file_id`` here would detach the file.
+    """Rename a block. The ``/update-block/`` endpoint overwrites the server-side
+    block_data with whatever we PATCH, so a title-only payload strips out
+    ``file_id`` and any other fields. Pass ``existing_block_data`` (the dict
+    returned by ``create_data_block``) so all fields survive the rename.
     """
-    block_data: dict = {"title": title}
+    payload: dict = dict(existing_block_data) if existing_block_data else {}
+    payload["title"] = title
     if file_id:
-        block_data["file_id"] = file_id
+        payload["file_id"] = file_id
     try:
         client.update_data_block(
             item_id=str(item_id),
             block_id=block_id,
             block_type=block_type,
-            block_data=block_data,
+            block_data=payload,
         )
     except Exception as e:
         logger.debug("rename block %s failed: %s", block_id, e)
+
+
+def _file_id_by_name(item: dict) -> dict[str, str]:
+    """Map stored filename -> file immutable_id for files already on the item."""
+    out: dict[str, str] = {}
+    for f in item.get("files") or []:
+        name = f.get("name")
+        fid = f.get("immutable_id") or f.get("_id") or f.get("file_id")
+        if name and fid:
+            out[str(name)] = str(fid)
+    return out
+
+
+def _blocks_by_file_id(item: dict) -> dict[str, list[tuple[str, str]]]:
+    """Map file_id -> list of (block_id, blocktype) for blocks on the item."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    blocks = item.get("blocks_obj")
+    if not isinstance(blocks, dict):
+        return out
+    for block_id, block in blocks.items():
+        fid = block.get("file_id")
+        btype = block.get("blocktype") or block.get("block_type")
+        if fid and btype:
+            out.setdefault(str(fid), []).append((str(block_id), str(btype)))
+    return out
+
+
+def _delete_block(client: DatalabClient, item_id: str, block_id: str) -> None:
+    url = f"{client.datalab_api_url}/delete-block/"
+    try:
+        client._post(
+            url,
+            json={"item_id": str(item_id), "block_id": block_id},
+        )
+    except Exception as e:
+        logger.warning("delete block %s on %s failed: %s", block_id, item_id, e)
+
+
+def _file_less_blocks_of_type(item: dict, block_type: str) -> list[tuple[str, str | None]]:
+    """Return (block_id, title) tuples for blocks on *item* that are the
+    desired type but have no ``file_id`` attached (e.g. blocks whose file was
+    stripped by a prior buggy rename)."""
+    out: list[tuple[str, str | None]] = []
+    blocks = item.get("blocks_obj")
+    if not isinstance(blocks, dict):
+        return out
+    for block_id, block in blocks.items():
+        btype = block.get("blocktype") or block.get("block_type")
+        if btype == block_type and not block.get("file_id"):
+            title = block.get("title")
+            out.append((str(block_id), str(title) if title else None))
+    return out
+
+
+def reconcile_block_type(
+    client: DatalabClient,
+    item_id: str,
+    item: dict,
+    filename: str,
+    desired_block_type: str,
+    desired_title: str | None = None,
+) -> bool:
+    """Ensure *filename* is attached to exactly one block of *desired_block_type*
+    on *item*. Handles three drift cases from earlier buggy runs:
+
+    1. A block of the wrong type already references this file → delete and
+       recreate as the desired type.
+    2. The file has no block at all, but there is exactly one file-less block
+       of the desired type (leftover from a rename that wiped ``file_id``) →
+       re-attach the file to that block.
+    3. The file has no block at all and no matching orphan → create a fresh
+       block with the file.
+
+    Returns True when anything changed.
+    """
+    file_ids = _file_id_by_name(item)
+    candidates = [filename, filename.replace(" ", "_")]
+    fid = next((file_ids[c] for c in candidates if c in file_ids), None)
+    if fid is None:
+        return False
+
+    block_index = _blocks_by_file_id(item)
+    matches = block_index.get(fid, [])
+
+    # Case 1: wrong-type block(s) attached to this file.
+    retyped = False
+    for block_id, btype in matches:
+        if btype == desired_block_type:
+            continue
+        logger.info(
+            "retyping block %s on %s: %s -> %s",
+            block_id, item_id, btype, desired_block_type,
+        )
+        _delete_block(client, str(item_id), block_id)
+        try:
+            with TimedOp(f"create_data_block {desired_block_type} on {item_id}"):
+                client.create_data_block(
+                    str(item_id), desired_block_type, file_ids=fid
+                )
+            retyped = True
+        except Exception as e:
+            logger.error("recreate %s block on %s failed: %s", desired_block_type, item_id, e)
+    if matches:
+        return retyped
+
+    # Cases 2 & 3: the file has no block. Look for a file-less block to heal.
+    orphans = _file_less_blocks_of_type(item, desired_block_type)
+
+    chosen: str | None = None
+    if desired_title:
+        title_matches = [bid for bid, t in orphans if t == desired_title]
+        if len(title_matches) == 1:
+            chosen = title_matches[0]
+        elif len(title_matches) > 1:
+            logger.debug(
+                "multiple orphan %s blocks share title %r on %s — skipping heal",
+                desired_block_type, desired_title, item_id,
+            )
+    if chosen is None and len(orphans) == 1 and not desired_title:
+        chosen = orphans[0][0]
+
+    if chosen is not None:
+        logger.info(
+            "re-attaching file %s to orphan %s block %s on %s",
+            filename, desired_block_type, chosen, item_id,
+        )
+        try:
+            client.update_data_block(
+                item_id=str(item_id),
+                block_id=chosen,
+                block_type=desired_block_type,
+                block_data={"file_id": fid},
+            )
+            return True
+        except Exception as e:
+            logger.warning("re-attach %s on %s failed: %s", chosen, item_id, e)
+            return False
+    if orphans and desired_title is None:
+        logger.debug(
+            "ambiguous orphan %s blocks (%d) on %s for %s — leaving alone",
+            desired_block_type, len(orphans), item_id, filename,
+        )
+        return False
+
+    # No existing block for this file — create one.
+    logger.info("creating missing %s block on %s for %s", desired_block_type, item_id, filename)
+    try:
+        with TimedOp(f"create_data_block {desired_block_type} on {item_id}"):
+            client.create_data_block(str(item_id), desired_block_type, file_ids=fid)
+        return True
+    except Exception as e:
+        logger.error("create %s block on %s failed: %s", desired_block_type, item_id, e)
+        return False
 
 
 def upload_if_new(
@@ -227,6 +383,7 @@ def upload_if_new(
         if block_title:
             try_rename_block(
                 client, str(item_id), block_type, block.get("block_id", ""), block_title,
+                existing_block_data=block,
                 file_id=uploaded["file_id"],
             )
     return True
