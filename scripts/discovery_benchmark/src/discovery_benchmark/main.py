@@ -93,14 +93,16 @@ COLLECTION_DESCRIPTION = f"""\
 
 ECHEM_BLOCK = "cycle"
 EIS_BLOCK = "eis"
+CV_BLOCK = "cv"
 MEDIA_BLOCK = "media"
 XRD_BLOCK = "xrd"
 XPS_BLOCK = "xps"
 
-# Per-cell data: filename prefix matches cell ID.
-CELL_FILE_SOURCES: list[tuple[Path, set[str] | None, str | None]] = [
-    (DATA_DIR / "CV", {".mpr"}, ECHEM_BLOCK),
-    (DATA_DIR / "EIS", {".mpr"}, EIS_BLOCK),
+# Per-cell data: filename prefix matches cell ID. The optional name-substring
+# filter (case-insensitive) restricts which files in the dir get picked up.
+CELL_FILE_SOURCES: list[tuple[Path, set[str] | None, str | None, str | None]] = [
+    (DATA_DIR / "CV", {".mpr"}, CV_BLOCK, "CV"),
+    (DATA_DIR / "EIS", {".mpr"}, EIS_BLOCK, None),
 ]
 
 
@@ -723,10 +725,13 @@ def collect_cell_characterisation(
 ) -> dict[int, list[tuple[Path, str | None]]]:
     """Per-cell files from CV/EIS/SWingXL (filename prefix = cell ID)."""
     result: dict[int, list[tuple[Path, str | None]]] = {}
-    for root, exts, block in CELL_FILE_SOURCES:
+    for root, exts, block, name_token in CELL_FILE_SOURCES:
         files = map_files_by_id(root, known_ids, extensions=exts)
         for cid, paths in files.items():
-            result.setdefault(cid, []).extend((p, block) for p in paths)
+            for p in paths:
+                if name_token and name_token.lower() not in p.name.lower():
+                    continue
+                result.setdefault(cid, []).append((p, block))
     return result
 
 
