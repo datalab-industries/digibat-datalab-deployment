@@ -12,3 +12,6 @@ ingest-discovery-benchmark = "discovery_benchmark.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+datalab-api = { git = "https://github.com/datalab-org/datalab-api.git", rev = "ml-evs/multiple-files-block" }

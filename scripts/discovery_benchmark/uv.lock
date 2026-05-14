@@ -52,17 +52,13 @@ wheels = [
 
 [[package]]
 name = "datalab-api"
-version = "0.4.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.5.0.post1+g880df76"
+source = { git = "https://github.com/datalab-org/datalab-api.git?rev=ml-evs%2Fmultiple-files-block#880df76fa8e00c216e9871a0919c6f6bcad55dcd" }
 dependencies = [
     { name = "bokeh", marker = "sys_platform != 'emscripten'" },
     { name = "httpx" },
     { name = "numpy" },
     { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/08/d96444d7940b8402b93e433487fd1ff75694cc4316eddb4df926340bd6a0/datalab_api-0.4.0.tar.gz", hash = "sha256:c7707c66dd89b76c2b330eaeafc973023c87b4cae944359e30a769766ca521de", size = 20635, upload-time = "2026-04-19T11:14:31.484Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/1f/4302839b9a02ae7a6eb0c9fbd52b3950fa3bc7bc6bc1afcb54b3cab5175d/datalab_api-0.4.0-py3-none-any.whl", hash = "sha256:0e5aef613cd52a382e9055fd4b757ebc920c65be402d7c8731a7d8b522898884", size = 17532, upload-time = "2026-04-19T11:14:29.81Z" },
 ]
 
 [[package]]
@@ -85,7 +81,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datalab-api", specifier = ">=0.4.0" },
+    { name = "datalab-api", git = "https://github.com/datalab-org/datalab-api.git?rev=ml-evs%2Fmultiple-files-block" },
     { name = "pandas", extras = ["excel"], specifier = "~=2.3" },
 ]
 
