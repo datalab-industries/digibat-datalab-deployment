@@ -360,6 +360,28 @@ def reconcile_block_type(
         return False
 
 
+def upload_file_only(
+    client: DatalabClient,
+    item_id: str | int,
+    path: Path,
+    existing_names: set[str],
+) -> str | None:
+    """Upload *path* to *item_id* if no file with that name is already present.
+
+    Returns the new file's ``file_id`` (or ``None`` when skipped). Never
+    creates a data block — useful for media (SEM/TEM/Cellerate) where the
+    media block is broken upstream.
+    """
+    canonical = path.name.replace(" ", "_")
+    if canonical in existing_names or path.name in existing_names:
+        logger.debug("skip existing file %s on %s", path.name, item_id)
+        return None
+    with TimedOp(f"upload {path.name} -> {item_id}"):
+        uploaded = client.upload_file(item_id, str(path))
+    existing_names.add(canonical)
+    return uploaded.get("file_id")
+
+
 def upload_if_new(
     client: DatalabClient,
     item_id: str | int,
@@ -395,15 +417,63 @@ def ensure_block(
     block_type: str,
     title: str,
     existing_titles: set[str],
+    file_id: str | None = None,
+    item: dict | None = None,
 ) -> None:
-    """Create a data block (no attached file) with a specific title if none exists."""
+    """Create a data block with the given title if none exists.
+
+    If *file_id* is provided, it is attached on creation, and an already-present
+    block of the same title with no ``file_id`` is healed by PATCHing in the
+    file. *item* is needed only for the heal path; pass it when *file_id* is
+    set so we can inspect existing blocks.
+    """
     if title in existing_titles:
-        logger.debug("block %r already present on %s", title, item_id)
+        if file_id and item is not None:
+            _heal_file_less_block(client, item_id, item, block_type, title, file_id)
+        else:
+            logger.debug("block %r already present on %s", title, item_id)
         return
     try:
+        kwargs = {"file_ids": file_id} if file_id else {}
         with TimedOp(f"create_data_block {block_type} on {item_id}"):
-            block = client.create_data_block(str(item_id), block_type)
-        try_rename_block(client, item_id, block_type, block.get("block_id", ""), title)
+            block = client.create_data_block(str(item_id), block_type, **kwargs)
+        try_rename_block(
+            client, item_id, block_type, block.get("block_id", ""), title,
+            existing_block_data=block,
+            file_id=file_id,
+        )
         existing_titles.add(title)
     except Exception as e:
         logger.error("create %s block on %s failed: %s", block_type, item_id, e)
+
+
+def _heal_file_less_block(
+    client: DatalabClient,
+    item_id: str,
+    item: dict,
+    block_type: str,
+    title: str,
+    file_id: str,
+) -> None:
+    """If a block of *block_type* with matching *title* exists but has no
+    ``file_id``, PATCH the file_id in."""
+    blocks_obj = item.get("blocks_obj") or {}
+    if not isinstance(blocks_obj, dict):
+        return
+    for bid, b in blocks_obj.items():
+        btype = b.get("blocktype") or b.get("block_type")
+        if btype != block_type or b.get("title") != title:
+            continue
+        if b.get("file_id"):
+            return  # already healthy
+        try:
+            payload = dict(b)
+            payload["file_id"] = file_id
+            client.update_data_block(
+                item_id=str(item_id), block_id=str(bid),
+                block_type=block_type, block_data=payload,
+            )
+            logger.info("attached file %s to existing %s block on %s", file_id, block_type, item_id)
+        except Exception as e:
+            logger.warning("heal %s block on %s failed: %s", block_type, item_id, e)
+        return
