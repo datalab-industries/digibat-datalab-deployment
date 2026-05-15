@@ -91,19 +91,20 @@ CELL_COLUMN_ALIASES: dict[str, str] = {
 }
 
 
-_PROJECT_ID_RE = re.compile(r"^([pP]\d+)(-.*)$")
+_CELL_ID_RE = re.compile(r"^([pP]\d+)-([A-Za-z]+)-(\d+)$")
 
 
 def _normalise_cell_id(s: object) -> str | None:
-    """Upper-case the project segment of an ID like ``p025-CEL-2``."""
+    """Upper-case the project segment and zero-pad the numeric suffix to 3
+    digits, so ``p025-CEL-2`` → ``P025-CEL-002``."""
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return None
     raw = str(s).strip()
     if not raw:
         return None
-    m = _PROJECT_ID_RE.match(raw)
+    m = _CELL_ID_RE.match(raw)
     if m:
-        return m.group(1).upper() + m.group(2)
+        return f"{m.group(1).upper()}-{m.group(2).upper()}-{int(m.group(3)):03d}"
     return raw
 
 
