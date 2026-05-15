@@ -571,8 +571,7 @@ def row_to_cell(
 
     # Characteristic mass + nominal capacity
     if cathode_active_mg is not None:
-        # Convert mg → g for datalab.
-        cell["characteristic_mass"] = float(cathode_active_mg) / 1000.0
+        cell["characteristic_mass"] = float(cathode_active_mg)
     cc = _nan_to_none(row.get("Cathode_Capacity_mAh"))
     ac = _nan_to_none(row.get("Anode_Capacity_mAh"))
     caps = [c for c in (cc, ac) if c is not None]
