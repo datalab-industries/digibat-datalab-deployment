@@ -370,7 +370,7 @@ def upsert_precursors(client: DatalabClient, plan: PlanData) -> None:
                 item_id=payload["item_id"],
                 item_type="starting_materials",
                 item_data=payload,
-                collection_id=ELECTRODES_COLLECTION,
+                collection_ids=[ELECTRODES_COLLECTION, CELL_COLLECTION],
             )
         except Exception as e:
             logger.error("upsert electrode %s failed: %s", payload["item_id"], e)
@@ -386,7 +386,7 @@ def upsert_precursors(client: DatalabClient, plan: PlanData) -> None:
                 item_id=payload["item_id"],
                 item_type="starting_materials",
                 item_data=payload,
-                collection_id=MATERIALS_COLLECTION,
+                collection_ids=[MATERIALS_COLLECTION, CELL_COLLECTION],
             )
         except Exception as e:
             logger.error("upsert electrolyte %s failed: %s", payload["item_id"], e)
@@ -402,7 +402,7 @@ def upsert_precursors(client: DatalabClient, plan: PlanData) -> None:
                 item_id=payload["item_id"],
                 item_type="starting_materials",
                 item_data=payload,
-                collection_id=MATERIALS_COLLECTION,
+                collection_ids=[MATERIALS_COLLECTION, CELL_COLLECTION],
             )
         except Exception as e:
             logger.error("upsert consumable %s failed: %s", payload["item_id"], e)
@@ -721,13 +721,12 @@ def attach_electrode_characterisation(
             existing = existing_file_names(item)
             existing_titles = existing_block_titles(item)
 
-            # SEM / TEM: upload files + one media block per technique with
-            # the first uploaded file attached.
-            for technique, files in [("SEM", sem.get(eld_id, [])), ("TEM", tem.get(eld_id, []))]:
-                if not files:
-                    continue
+            # SEM / TEM: upload files + one combined SEM/TEM media block per
+            # electrode with the first uploaded file attached.
+            sem_tem_files = sem.get(eld_id, []) + tem.get(eld_id, [])
+            if sem_tem_files:
                 first_id: str | None = None
-                for f in files:
+                for f in sem_tem_files:
                     try:
                         fid = upload_file_only(client, item_id, f, existing)
                         if fid and first_id is None:
@@ -735,9 +734,8 @@ def attach_electrode_characterisation(
                     except Exception as e:
                         logger.error("upload %s failed: %s", f.name, e)
                 if first_id is None:
-                    # All uploads skipped — find an existing file_id by name.
                     name_to_id = _name_to_file_id(item)
-                    for f in files:
+                    for f in sem_tem_files:
                         cand = f.name.replace(" ", "_")
                         if cand in name_to_id:
                             first_id = name_to_id[cand]
@@ -747,45 +745,61 @@ def attach_electrode_characterisation(
                             break
                 ensure_block(
                     client, item_id, MEDIA_BLOCK,
-                    f"{technique} {eld_id}", existing_titles,
+                    f"SEM/TEM {eld_id}", existing_titles,
                     file_id=first_id, item=item,
                 )
 
-            # XRD: one block per .xrdml/.xy file
-            for f in xrd.get(eld_id, []):
+            # XRD: upload all patterns + one xrd block per electrode with
+            # file_ids = [every .xrdml/.xy file]. .csv files still upload but
+            # aren't included in the block.
+            xrd_all = xrd.get(eld_id, [])
+            xrd_pattern_files = [f for f in xrd_all if f.suffix.lower() in {".xrdml", ".xy"}]
+            xrd_other = [f for f in xrd_all if f not in xrd_pattern_files]
+            xrd_file_ids = _upload_scans(client, item_id, xrd_pattern_files, existing)
+            for f in xrd_other:
                 try:
-                    block = XRD_BLOCK if f.suffix.lower() in {".xrdml", ".xy"} else None
-                    if block:
-                        reconcile_block_type(client, item_id, item, f.name, block)
-                    upload_if_new(client, item_id, f, existing, block)
+                    upload_file_only(client, item_id, f, existing)
                 except Exception as e:
                     logger.error("upload xrd %s failed: %s", f.name, e)
+            if xrd_file_ids:
+                _ensure_multi_file_block(
+                    client, item_id, item, XRD_BLOCK,
+                    f"XRD {eld_id}", xrd_file_ids, existing_titles,
+                )
 
-            # XPS: upload all scans + one xps block per electrode with file_ids = [all uploaded XPS files]
+            # XPS: upload all scans + one xps block per electrode with
+            # file_ids = [every uploaded XPS file].
             xps_files = xps_top.get(eld_id, []) + xps_dirs.get(eld_id, [])
-            xps_file_ids = _upload_xps_scans(client, item_id, xps_files, existing)
+            xps_file_ids = _upload_scans(client, item_id, xps_files, existing, name_with_parent=True)
             if xps_file_ids:
-                _ensure_xps_block(client, item_id, item, eld_id, xps_file_ids, existing_titles)
+                _ensure_multi_file_block(
+                    client, item_id, item, XPS_BLOCK,
+                    f"XPS {eld_id}", xps_file_ids, existing_titles,
+                )
         finally:
             reset_current_cell(token)
 
 
-def _upload_xps_scans(
+def _upload_scans(
     client: DatalabClient,
     item_id: str,
     files: list[Path],
     existing: set[str],
+    name_with_parent: bool = False,
 ) -> list[str]:
-    """Upload each XPS scan with a deduplicated filename. Returns all file_ids
-    associated with the electrode's XPS scans (newly uploaded + previously
-    uploaded), so the XPS block's file_ids list is complete."""
+    """Upload each file with a deduplicated filename and return *all* file_ids
+    (newly-uploaded + previously-uploaded by name), so a multi-file block can
+    list every scan.
+
+    *name_with_parent* prefixes the parent directory to the stored filename —
+    needed for XPS where subdir contents have generic names like
+    ``C1s Scan.VGD``.
+    """
     file_ids: list[str] = []
     name_to_existing_id = _name_to_file_id_from_item(item_id, client)
 
     for f in files:
-        # XPS subdirs often have generic names (``C1s Scan.VGD``) — prepend the
-        # parent dir to make the stored filename unique across electrodes.
-        if f.parent.name and f.parent.name.upper().startswith("ELD-"):
+        if name_with_parent and f.parent.name and f.parent.name.upper().startswith("ELD-"):
             uniq_name = f"{f.parent.name}__{f.name}".replace(" ", "_")
         else:
             uniq_name = f.name.replace(" ", "_")
@@ -826,50 +840,50 @@ def _name_to_file_id_from_item(item_id: str, client: DatalabClient) -> dict[str,
     return _name_to_file_id(item)
 
 
-def _ensure_xps_block(
+def _ensure_multi_file_block(
     client: DatalabClient,
     item_id: str,
     item: dict,
-    eld_id: str,
+    block_type: str,
+    title: str,
     file_ids: list[str],
     existing_titles: set[str],
 ) -> None:
-    title = f"XPS {eld_id}"
-    # Find an existing XPS block on this item, if any (match by title).
+    """Ensure a single multi-file block of *block_type* with *title* exists on
+    *item_id* with ``file_ids`` set to the full list."""
+    # Find an existing block of this type+title.
     block_id: str | None = None
     blocks_obj = item.get("blocks_obj") or {}
     if isinstance(blocks_obj, dict):
         for bid, b in blocks_obj.items():
             btype = b.get("blocktype") or b.get("block_type")
-            if btype == XPS_BLOCK and b.get("title") == title:
+            if btype == block_type and b.get("title") == title:
                 block_id = bid
                 break
     if block_id is None:
         try:
-            with TimedOp(f"create_data_block xps on {item_id}"):
-                block = client.create_data_block(str(item_id), XPS_BLOCK, file_ids=file_ids)
+            with TimedOp(f"create_data_block {block_type} on {item_id}"):
+                block = client.create_data_block(str(item_id), block_type, file_ids=file_ids)
             block_id = block.get("block_id")
             existing_titles.add(title)
-            # set title (round-trip block_data to preserve file_ids)
             try_rename_block(
-                client, item_id, XPS_BLOCK, block_id or "", title,
+                client, item_id, block_type, block_id or "", title,
                 existing_block_data=block,
             )
         except Exception as e:
-            logger.warning("create xps block for %s failed: %s", item_id, e)
+            logger.warning("create %s block for %s failed: %s", block_type, item_id, e)
         return
 
-    # Update existing block with the full file_ids list.
     try:
         client.update_data_block(
             item_id=str(item_id),
             block_id=block_id,
-            block_type=XPS_BLOCK,
+            block_type=block_type,
             block_data={"title": title, "file_ids": file_ids},
         )
-        logger.info("updated xps block %s on %s (%d files)", block_id, item_id, len(file_ids))
+        logger.info("updated %s block %s on %s (%d files)", block_type, block_id, item_id, len(file_ids))
     except Exception as e:
-        logger.warning("update xps block %s on %s failed: %s", block_id, item_id, e)
+        logger.warning("update %s block %s on %s failed: %s", block_type, block_id, item_id, e)
 
 
 # ---------- assembly dates ----------

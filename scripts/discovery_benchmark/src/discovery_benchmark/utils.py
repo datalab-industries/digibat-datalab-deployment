@@ -101,13 +101,17 @@ def upsert_item(
     item_type: str,
     item_data: dict,
     collection_id: str | None = None,
+    collection_ids: list[str] | None = None,
 ) -> dict:
+    cids: list[str] | None = list(collection_ids) if collection_ids else None
+    if collection_id and not cids:
+        cids = [collection_id]
     try:
         item = client.create_item(
             item_id=item_id,
             item_type=item_type,
             item_data=item_data,
-            collection_id=collection_id,
+            collection_ids=cids,
         )
         logger.info("created %s %s", item_type, item_id)
         return item
@@ -118,9 +122,36 @@ def upsert_item(
     except Exception as e:
         logger.error("get_item %s failed: %s", item_id, e)
         raise
-    client.update_item(item_id=item_id, item_data=item_data)
+    merged = dict(item_data)
+    if cids:
+        merged["collections"] = _merged_collections(client, existing, cids)
+    client.update_item(item_id=item_id, item_data=merged)
     logger.info("updated %s %s", item_type, item_id)
     return existing
+
+
+def _merged_collections(
+    client: DatalabClient,
+    existing: dict,
+    desired_ids: list[str],
+) -> list[dict]:
+    """Return a list of ``{"immutable_id": ...}`` covering both the existing
+    memberships and the desired collection IDs (de-duped)."""
+    by_imm: dict[str, dict] = {}
+    for c in (existing.get("collections") or []):
+        imm = c.get("immutable_id")
+        if imm:
+            by_imm[str(imm)] = {"immutable_id": imm}
+    for cid in desired_ids:
+        try:
+            data, _ = client.get_collection(cid)
+            imm = data.get("immutable_id")
+        except Exception as e:
+            logger.warning("get_collection %s failed: %s", cid, e)
+            continue
+        if imm and str(imm) not in by_imm:
+            by_imm[str(imm)] = {"immutable_id": imm}
+    return list(by_imm.values())
 
 
 def ensure_collection(
