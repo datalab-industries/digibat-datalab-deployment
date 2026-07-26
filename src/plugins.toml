@@ -1,0 +1,5 @@
+dependencies = ["datalab-app-plugin-shimazdu-hplc", "datalab-app-plugin-herfd-xas"]
+
+[tool.uv.sources]
+datalab-app-plugin-shimazdu-hplc = { path = "pydatalab/plugins/datalab-ingestblocks/shimazdu-hplc" }
+datalab-app-plugin-herfd-xas = { path = "pydatalab/plugins/datalab-ingestblocks/herfd-xas" }
