@@ -45,30 +45,8 @@ server {
     proxy_redirect off;
     proxy_pass http://datalab;
   }
-
-  error_page 503 /503.html;
-
-}
-
-# API server
-server {
-  listen 443 ssl;
-  include nginx_ssl.conf;
-  client_max_body_size 5000M;
-  proxy_read_timeout 600s;
-  proxy_max_temp_file_size 10240m;
-
-  # set the correct host(s) for your site
-  server_name {{ api_url }};
-
-  # Allow app to iframe files from API
-  add_header X-Frame-Options "ALLOW-FROM {{ app_url }}";
-
-  location /503.html {
-    root /app/static;
-  }
-
-  location / {
+  
+  location /api {
     set $maintenance 0;
     if (-f /etc/nginx/static/datalab_maintenance_on) {
        set $maintenance 1;
@@ -88,5 +66,7 @@ server {
     proxy_redirect off;
     proxy_pass http://pydatalab;
   }
+
   error_page 503 /503.html;
+
 }

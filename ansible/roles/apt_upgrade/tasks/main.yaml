@@ -64,6 +64,14 @@
     - { option: apply_updates, value: 'yes' }
     - { option: reboot, value: when-needed }
 
+- name: Ensure dnf-automatic timer override directory exists (RedHat)
+  become: true
+  when: ansible_os_family == 'RedHat'
+  ansible.builtin.file:
+    path: /etc/systemd/system/dnf-automatic.timer.d
+    state: directory
+    mode: '0755'
+
 - name: Override dnf-automatic timer to run at 02:00 (RedHat)
   become: true
   when: ansible_os_family == 'RedHat'
