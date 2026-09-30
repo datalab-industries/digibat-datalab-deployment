@@ -1,0 +1,17 @@
+---
+# Pins stable, explicit image names for locally-built services.
+#
+# Without this, Compose falls back to its implicit per-project naming
+# convention for build-only services. Under the containerd snapshotter
+# storage driver, images without an explicit `image:` key have been
+# observed to lose their tag shortly after being built, leaving a
+# running container whose image can no longer be resolved by ID
+# (`docker compose images` / `docker inspect` fail with "No such image").
+# An explicit name gives the image a durable reference that survives.
+services:
+  app:
+    image: datalab-app
+  api:
+    image: datalab-api
+  database:
+    image: datalab-database
