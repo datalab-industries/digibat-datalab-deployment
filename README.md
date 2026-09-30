@@ -100,6 +100,7 @@ git submodule update
 cd datalab-ansible-terraform
 uv venv --python 3.12
 uv pip install -r requirements.txt
+uv run ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
 or alternatively,
@@ -142,6 +143,9 @@ ungrouped:
       prometheus_remote_write_url: <your_prometheus_instance_url, e.g., https://grafana.datalab.industries/prometheus/api/v1/write>
       prometheus_user: <your_prometheus_username>
       prometheus_password: <your_prometheus_password>
+      manage_system: <whether to install system packages and docker, defaults to true (see "Rootless docker and externally managed hosts" below)>
+      docker_rootless: <whether to use a rootless docker daemon, defaults to false>
+      docker_user: <the user that runs docker commands, defaults to ansible_user>
       extras:   # (See discussion "Running additional containers" below)
         <service_name>:
           url: <service_url>
@@ -186,6 +190,15 @@ If you are using your own domain (configured via `app_url` and `api_url` in the 
 then you will need to update your domain's DNS settings so that your subdomains point to the IP
 of the server as given in your inventory file.
 
+The API can either be served from its own subdomain (e.g. `app_url: example.org` with
+`api_url: api.example.org`), or mounted under a root path on the
+same host as the app (e.g. `api_url: example.org/api`).
+In the latter case, only one certificate name is requested, and nginx serves the API as a
+sublocation of the app's server block rather than as a separate server.
+The root path is proxied through untouched, so the API must be told to serve its own
+routes under it: set `ROOT_PATH` in `./vaults/datalab/prod_config.json` to the matching
+path (e.g. `/api`), and `VUE_APP_API_URL` in `./vaults/datalab/.env` to the full URL.
+
 Once all these configuration steps have been performed, we can try to execute
 the Ansible "playbook" that will install all the pre-requisite services, build
 the Docker containers as configured, connect them via Nginx and add hardening
@@ -215,6 +228,49 @@ will not be available (e.g., automatic mounting of data disks, fail2ban, etc.) i
 If you need to support for a specific Linux distribution, please raise an
 issue on GitHub at [datalab-industries/datalab-ansible-terraform](https://github.com/datalab-industries/datalab-ansible-terraform/issues).
 Official support will not be provided for Windows or macOS as target servers.
+
+#### Rootless docker and externally managed hosts
+
+By default, the playbook manages the whole server: it bootstraps the `ansible_user` as root,
+installs system packages and Docker, and configures fail2ban and sshd.
+On servers managed by someone else (e.g., a university IT service), you may not have root
+access, and Docker may instead be provided as a [rootless daemon](https://docs.docker.com/engine/security/rootless/)
+owned by a separate user.
+
+Both cases can be configured in the inventory:
+
+```yaml
+manage_system: false      # assume system packages and docker are already installed
+manage_nginx: false       # a reverse proxy and its certificates are managed elsewhere
+docker_rootless: true     # use a rootless docker daemon...
+docker_user: docker       # ...owned by this user, which ansible_user must be able to become
+docker_shared_group: datalab  # a group containing both users, used to share synced files
+# docker_host: unix:///run/user/<uid>/docker.sock  # (optional) defaults to the docker_user's rootless socket
+```
+
+With `manage_system: false`, the playbook skips bootstrapping, disk mounting, package installation,
+fail2ban, sshd hardening and upgrades, and only checks that the configured Docker daemon is reachable
+before deploying the *datalab* services.
+
+With `manage_nginx: false`, no nginx or certbot containers are created and no certificate
+renewal is scheduled. The app and API containers still publish their ports (8081 and 5001),
+so an externally managed reverse proxy can be pointed at them; it is then responsible for TLS
+and for the `app_url`/`api_url` routing that the bundled nginx config would otherwise handle.
+
+With `docker_rootless: true`, all Docker commands (including scheduled cron jobs) are run as
+`docker_user` against its daemon.
+In this case, the server must already provide:
+
+- a rootless daemon for `docker_user` that keeps running without a login session (i.e., with lingering enabled),
+- the ability for `ansible_user` to become `docker_user` (e.g., via sudo), and for `docker_user` to use cron,
+- read access for `docker_user` to the `ansible_user`'s home directory (via `docker_shared_group`),
+- read and write access for `docker_user` to `/data`,
+- permission to bind the ports used by nginx (80 and 443), e.g., via the `net.ipv4.ip_unprivileged_port_start` sysctl.
+
+Borg configuration and metrics are stored in `docker_user`'s home directory, so that the backup
+container can read and write them.
+If the server already runs its own exporters on the monitoring ports, these can be changed with
+`monitoring_node_exporter_port`, `monitoring_prometheus_port` and `monitoring_cadvisor_port`.
 
 #### Keeping things up to date
 
@@ -292,7 +348,7 @@ To install plugins on a server deployed with this repository:
 
 Constantly entering the vault password for every attempted deployment can be a
 bit tedious, so by default, the [`Makefile`](Makefile) will attempt to retrieve the vault
-password from a local [Bitwarden CLI](https://bitwarden.com/help/cli/) installation,
+password from Bitwarden using the unofficial [rbw client](https://github.com/doy/rbw),
 which either only requires you to enter your Bitwarden password once per
 session, or can be configured to remain logged in.
 
@@ -344,6 +400,13 @@ using [Borg](https://www.borgbackup.org/en/stable/) and
 These backups are encrypted, de-duplicated and compressed, requiring significantly
 less space than the native backup option, and can be synced easily with remote
 Borg instances over SSH.
+By default, only `/data/files` is backed up from disk, alongside a dump of the
+*datalab* MongoDB database made by borgmatic's database hook.
+Other paths under `/data` (native snapshots in `/data/backups`, logs, and the
+data directory of a rootless Docker daemon) are deliberately left out, as they
+are either reproducible or covered elsewhere; set `borg_source_directories` in
+your inventory to back up more.
+
 You will need to have an appropriate remote server (ideally separate from the *datalab* server itself)
 running Borg (we recommend [rsync.net](https://www.rsync.net/products/borg.html) which has excellent borg support).
 
@@ -368,9 +431,9 @@ For example, this is used for simple services in the central *datalab* organisat
 
 For more advanced monitoring, the Ansible playbooks contain a role tagged as
 `monitoring`, which will install and configure metrics harvesters using
-[Prometheus](https://prometheus.io/) (with [Node Exporter](https://github.com/prometheus/node_exporter) and
-[cAdvisor](https://github.com/google/cadvisor)) to monitor the host system and
-containers.
+[Prometheus](https://prometheus.io/) (with [Node Exporter](https://github.com/prometheus/node_exporter)) to monitor the host system.
+Per-container metrics from [cAdvisor](https://github.com/google/cadvisor) can also be enabled by setting
+`monitoring_cadvisor: true`, though note that this uses noticeably more CPU.
 
 To make use of this monitoring, you will need your own [Grafana instance](https://grafana.com/oss/grafana) (also running Prometheus as a harvester of the remote metrics) to visualise the metrics.
 
@@ -389,6 +452,97 @@ and then running the playbook with the `monitoring` tag:
 ```shell
 make monitoring
 ```
+
+#### ChemInventory syncing
+
+Items from a [ChemInventory](https://www.cheminventory.net/) inventory can be
+periodically synced into *datalab* using the
+[datalab-cheminventory-plugin](https://github.com/datalab-industries/datalab-cheminventory-plugin).
+This is enabled by adding the following variables to your inventory:
+
+```yaml
+cheminventory_inventory_id: <your_cheminventory_inventory_id>
+cheminventory_api_key: <your_cheminventory_api_key>
+cheminventory_datalab_api_key: <a_datalab_api_key_for_the_sync>
+cheminventory_cron_frequency: "44 * * * *"  # (optional) defaults to daily at 6:11am
+```
+
+The inventory ID is the numeric ID of the ChemInventory inventory to sync.
+To find it, run the plugin's `status` command with your ChemInventory API key
+(see the ChemInventory [API authentication docs](https://www.cheminventory.net/support/api/#apiauthentication)
+for how to create one); no *datalab* connection is needed:
+
+```shell
+docker run --rm -e CHEMINVENTORY_API_KEY=<your_cheminventory_api_key> \
+  ghcr.io/datalab-industries/datalab-cheminventory-plugin:latest \
+  uv run datalab-cheminventory-sync status
+```
+
+This lists the key's default inventory and any other inventories it can
+access, each with its ID in brackets, e.g., `Default inventory: My Lab (12345)`.
+
+The sync targets the host's `api_url` by default (override with
+`cheminventory_datalab_api_url`), and the plugin version can be set with
+`cheminventory_image_version`.
+The API keys are written to an env file readable only by the docker user,
+rather than into the crontab, and the output of the latest sync is written to
+`~/last_cheminventory_sync.txt`.
+Then run the playbook with the `cheminventory` tag:
+
+```shell
+make cheminventory
+```
+
+#### Emails for failed cron jobs
+
+The playbook schedules several cron jobs as the docker user (certificate
+renewal, weekly snapshots, borg backups and ChemInventory syncing).
+Each writes its output to `~/last_<job>.txt`, and only prints it if the job
+fails, in which case cron emails it to the `MAILTO` address.
+This can be enabled by adding the following variables to your inventory, e.g.,
+for [Resend](https://resend.com/docs/send-with-smtp):
+
+```yaml
+cron_mailto: <the address to email failed cron jobs to>
+cron_mail_from: <the sender address, on a domain verified with the SMTP provider>
+cron_smtp_host: smtp.resend.com
+cron_smtp_user: resend
+cron_smtp_password: <your Resend API key>
+cron_smtp_port: 587  # (optional) the default; STARTTLS, or implicit TLS for port 465
+```
+
+All of these (except `cron_smtp_port`) must be set together; setting only some
+of them fails the playbook run.
+Then run the playbook with the `cron_email` tag:
+
+```shell
+make cron_email
+```
+
+This installs [msmtp](https://marlam.de/msmtp/) as the system `sendmail` on Debian/Ubuntu,
+configures it for the docker user, and sets `MAILTO` in their crontab.
+A test email is sent whenever the SMTP settings or addresses change.
+If the host already runs a mail server (e.g., postfix), or the system is not
+managed by the playbook (`manage_system: false`), msmtp is not installed, and
+the existing `sendmail` is used instead.
+
+##### Alerting with PagerDuty (or similar)
+
+Failures can also raise incidents in an alerting service that accepts inbound
+email, such as [PagerDuty](https://support.pagerduty.com/main/docs/email-integration-guide).
+Add an **Email** integration to a PagerDuty service, and add its address to
+`cron_mailto` (multiple addresses can be comma-separated), e.g.,
+
+```yaml
+cron_mailto: "team@example.com,datalab-cron@yourorg.pagerduty.com"
+```
+
+The cron email subject names the host and job, so configure the integration to
+open a new incident only if one is not already open for the same subject, to
+avoid a new incident for each repeated failure.
+Note that incidents are not resolved automatically when a job next succeeds,
+and that the test email sent when the settings change will also raise an
+incident.
 
 #### Running additional containers
 
