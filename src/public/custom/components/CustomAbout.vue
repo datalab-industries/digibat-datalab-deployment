@@ -19,12 +19,16 @@
     
     <div class="custom-about-callout">
       <span class="h3">For AI Researchers: The Benchmark Dataset</span>
-      <p><b>Coming April 2026</b> — we are releasing the <b>DIGIBAT Battery Discovery Benchmark</b>, containing over <b>250 fully characterized battery cells</b>, featuring:</p>
+      <p><b>July 2026</b> — we have released the <b>DIGIBAT Battery Discovery Benchmark</b>, containing over <b>250 fully characterized battery cells</b>, featuring:</p>
       <ul>
         <li><b>Controlled Variables</b>: Varied spacer thicknesses, separator types, and electrolyte volumes.</li>
         <li><b>Multi-Modal Data</b>: Integrated EIS, CV, SEM, XRD, and cycle-life metrics.</li>
         <li><b>Programmatic Access</b>: All data is available via the <i>datalab</i> API for direct integration with Python-based AI agents and Large Language Models.</li>
       </ul>
+
+      <p>Read the Henry Royce Institute's press release <a href="https://www.royce.ac.uk/news/discovery-benchmark-released-open-battery-dataset-showcases-the-future-of-ai-enabled-materials-discovery" target="_blank">here</a> with accompanying video on the <a href="https://www.youtube.com/watch?v=nM_ktXMItOw" target="_blank">DIGIBAT YouTube channel</a>.</p>
+
+      <p>You can download the dataset from Zenodo at <a href="https://doi.org/10.5281/zenodo.20532538">10.5281/zenodo.20532538</a>.</p>
     </div>
     
     <div class="custom-about-content">
